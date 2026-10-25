@@ -1994,6 +1994,62 @@ describe('listModels — DotHoosh live catalog', () => {
     ])
   })
 
+  it('reads the Anthropic listing from a custom host and OpenAI from the mirror when only the Anthropic base is custom', async () => {
+    getRotatedApiKeyMock.mockReturnValue('')
+    answerByUrl()
+
+    const { models } = await listModels(
+      makeProvider({
+        id: 'dothoosh',
+        presetProviderId: 'dothoosh',
+        defaultChatEndpoint: ENDPOINT_TYPE.OPENAI_CHAT_COMPLETIONS,
+        settings: { extraHeaders: { 'X-Tenant': 'acme' } },
+        endpointConfigs: {
+          [ENDPOINT_TYPE.OPENAI_CHAT_COMPLETIONS]: { baseUrl: 'https://gateway.dothoosh.com' },
+          [ENDPOINT_TYPE.ANTHROPIC_MESSAGES]: { baseUrl: 'https://anthropic.example.test/anthropic' }
+        }
+      })
+    )
+
+    const openaiCall = aiSdkGetFromApiMock.mock.calls.find(([arg]) => arg.url.endsWith('/v1/models'))![0]
+    const anthropicCall = aiSdkGetFromApiMock.mock.calls.find(([arg]) =>
+      arg.url.startsWith('https://anthropic.example.test/')
+    )![0]
+    expect(openaiCall.url).toBe('https://www.dothoosh.com/gateway/v1/models')
+    expect(Object.keys(openaiCall.headers ?? {})).toEqual([])
+    expect(anthropicCall.url).toBe('https://anthropic.example.test/anthropic/v1/models')
+    expect(anthropicCall.headers).not.toHaveProperty('x-api-key')
+    expect(anthropicCall.headers).not.toHaveProperty('authorization')
+    expect(anthropicCall.headers).toMatchObject({ 'x-tenant': 'acme' })
+    expect(models.map((m) => m.apiModelId)).toEqual(['gpt-5', 'claude-opus-5'])
+  })
+
+  it('reads the OpenAI listing from a custom host and the Anthropic listing from the mirror when only the OpenAI base is custom', async () => {
+    getRotatedApiKeyMock.mockReturnValue('')
+    answerByUrl()
+
+    await listModels(
+      makeProvider({
+        id: 'dothoosh',
+        presetProviderId: 'dothoosh',
+        defaultChatEndpoint: ENDPOINT_TYPE.OPENAI_CHAT_COMPLETIONS,
+        settings: { extraHeaders: { 'X-Tenant': 'acme' } },
+        endpointConfigs: {
+          [ENDPOINT_TYPE.OPENAI_CHAT_COMPLETIONS]: { baseUrl: 'https://relay.example' },
+          [ENDPOINT_TYPE.ANTHROPIC_MESSAGES]: { baseUrl: 'https://gateway.dothoosh.com/anthropic' }
+        }
+      })
+    )
+
+    const openaiCall = aiSdkGetFromApiMock.mock.calls.find(([arg]) => arg.url.startsWith('https://relay.example/'))![0]
+    const anthropicCall = aiSdkGetFromApiMock.mock.calls.find(([arg]) => arg.url.includes('/anthropic/'))![0]
+    expect(openaiCall.url).toBe('https://relay.example/v1/models')
+    expect(openaiCall.headers).toMatchObject({ 'x-tenant': 'acme' })
+    expect(openaiCall.headers).not.toHaveProperty('authorization')
+    expect(anthropicCall.url).toBe('https://www.dothoosh.com/gateway/anthropic/v1/models')
+    expect(Object.keys(anthropicCall.headers ?? {})).toEqual([])
+  })
+
   it('sends no provider headers to the public mirror', async () => {
     getRotatedApiKeyMock.mockReturnValue('')
     answerByUrl()
