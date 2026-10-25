@@ -1015,29 +1015,39 @@ function assertUsableDotHooshListings(routes: Record<string, unknown>, keyed: bo
   if (counts.every(({ usable }) => usable === 0)) throw new Error('DotHoosh listing has no models on any route')
 }
 
+/** The default Anthropic-messages base of the DotHoosh preset (`packages/provider-registry/src/providers/dothoosh.ts`). */
+const DOTHOOSH_ANTHROPIC_API_URL = `${DOTHOOSH_API_URL}/anthropic`
+
 const dothooshFetcher: ModelFetcher = {
   match: (p) => matchesPreset(p, 'dothoosh'),
   fetch: async (provider, signal, options) => {
     const apiKey = providerService.getRotatedApiKey(provider.id)
     const base = (endpoint: EndpointType) => withoutTrailingSlash(getBaseUrl(provider, endpoint))
     const chatBase = base(ENDPOINT_TYPE.OPENAI_CHAT_COMPLETIONS)
-    const useMirror = !apiKey && (!chatBase || chatBase === DOTHOOSH_API_URL)
-    const openaiUrl = useMirror ? `${DOTHOOSH_MIRROR_URL}/v1/models` : `${formatApiHost(chatBase)}/models`
-    const anthropicUrl = useMirror
+    const anthropicBase = base(ENDPOINT_TYPE.ANTHROPIC_MESSAGES)
+    // Each route picks the public mirror or its own host independently: a keyless user may
+    // keep the default OpenAI host while pointing Anthropic at a custom host, or the reverse.
+    const openaiMirror = !apiKey && (!chatBase || chatBase === DOTHOOSH_API_URL)
+    const anthropicMirror = !apiKey && (!anthropicBase || anthropicBase === DOTHOOSH_ANTHROPIC_API_URL)
+    const openaiUrl = openaiMirror ? `${DOTHOOSH_MIRROR_URL}/v1/models` : `${formatApiHost(chatBase)}/models`
+    const anthropicUrl = anthropicMirror
       ? `${DOTHOOSH_MIRROR_URL}/anthropic/v1/models`
-      : `${formatApiHost(base(ENDPOINT_TYPE.ANTHROPIC_MESSAGES))}/models`
-    const appHeaders = useMirror ? {} : mergeHeaders(getProviderAppHeaders(provider), getExtraHeaders(provider))
+      : `${formatApiHost(anthropicBase)}/models`
+    const hostHeaders = mergeHeaders(getProviderAppHeaders(provider), getExtraHeaders(provider))
+    // The public mirror is requested without headers; a route on the user's host keeps the provider headers.
+    const openaiHeaders = openaiMirror ? {} : hostHeaders
+    const anthropicHeaders = anthropicMirror ? {} : hostHeaders
     const [openai, anthropic] = await Promise.all([
       getFromApi({
         url: openaiUrl,
-        headers: apiKey ? mergeHeaders(appHeaders, { Authorization: `Bearer ${apiKey}` }) : appHeaders,
+        headers: apiKey ? mergeHeaders(openaiHeaders, { Authorization: `Bearer ${apiKey}` }) : openaiHeaders,
         responseSchema: DotHooshListingSchema,
         abortSignal: signal
       }),
       readAnthropicListing((afterId) =>
         getFromApi({
           url: afterId ? `${anthropicUrl}?after_id=${encodeURIComponent(afterId)}` : anthropicUrl,
-          headers: apiKey ? mergeHeaders(appHeaders, { 'X-Api-Key': apiKey }) : appHeaders,
+          headers: apiKey ? mergeHeaders(anthropicHeaders, { 'X-Api-Key': apiKey }) : anthropicHeaders,
           responseSchema: DotHooshListingSchema,
           abortSignal: signal
         })
@@ -1050,7 +1060,10 @@ const dothooshFetcher: ModelFetcher = {
         return undefined
       })
     ])
-    assertUsableDotHooshListings(anthropic ? { openai, anthropic } : { openai }, Boolean(apiKey) || !useMirror)
+    assertUsableDotHooshListings(
+      anthropic ? { openai, anthropic } : { openai },
+      Boolean(apiKey) || !(openaiMirror && anthropicMirror)
+    )
     return listing(
       parseDotHooshListings({ openai, anthropic }).map((model) =>
         toModel(model.id, provider, {
