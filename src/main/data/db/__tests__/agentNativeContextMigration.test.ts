@@ -56,8 +56,10 @@ describe('native context migrate-forward', () => {
     dbh.sqlite.exec(
       `DROP TABLE agent_session_context; DROP TABLE agent_runtime_backend;
        DROP INDEX agent_session_message_parent_idx; DROP INDEX agent_session_message_root_uniq;
+       DROP INDEX agent_session_owner_idx;
        ALTER TABLE agent_session_message DROP COLUMN submission;
        ALTER TABLE agent_session_message DROP COLUMN parent_id;
+       ALTER TABLE agent_session DROP COLUMN owner_session_id;
        ALTER TABLE agent_session DROP COLUMN active_node_id;`
     )
     dbh.sqlite.prepare('DELETE FROM __drizzle_migrations WHERE created_at >= ?').run(migration.when)

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 
 import type { AgentSession, AgentSessionEvent } from '@earendil-works/pi-coding-agent'
 
+import { ENTRY_KINDS } from '@cherrystudio/agent-behavior'
 import {
   runtimeId,
   ThreadFeed,
@@ -43,7 +44,7 @@ export class PiProjection {
       report
     )
     this.bind(session)
-    for (const message of session.messages) this.write(message, this.id(message), 'complete')
+    for (const message of this.currentMessages()) this.write(message, this.id(message), 'complete')
   }
 
   rebind(session: AgentSession): void {
@@ -60,7 +61,7 @@ export class PiProjection {
     this.calls.clear()
     this.feed.publish({ type: 'gap', reason: 'mapping-reset' })
     this.snapshotItems = []
-    for (const message of session.messages) this.write(message, this.id(message), 'complete')
+    for (const message of this.currentMessages()) this.write(message, this.id(message), 'complete')
     this.feed.publish({
       ...this.feed.snapshot,
       items: this.snapshotItems,
@@ -72,6 +73,43 @@ export class PiProjection {
   toolCallId(ref: ItemRef): string | undefined {
     if (ref.session.backendId !== this.ref.backendId || ref.session.id !== this.ref.id) return undefined
     return this.toolCallIds.get(ref.id)
+  }
+
+  private currentMessages(): PiMessage[] {
+    const branch = this.session.sessionManager.getBranch()
+    const origin = branch.findLastIndex(
+      (entry) => entry.type === 'custom' && entry.customType === ENTRY_KINDS.subagentOrigin
+    )
+    if (origin < 0) return this.session.messages
+    const own = new Set(branch.slice(origin + 1).flatMap((entry) => (entry.type === 'message' ? [entry.message] : [])))
+    return this.session.messages.filter((message) => own.has(message))
+  }
+
+  /** Committed native entries and their proven live identities; copied parent context is excluded. */
+  archive(): { items: ContentItem[]; aliases: Record<string, string> } {
+    const branch = this.session.sessionManager.getBranch()
+    const start = branch.findLastIndex(
+      (entry) => entry.type === 'custom' && entry.customType === ENTRY_KINDS.subagentOrigin
+    )
+    const calls = this.calls
+    this.calls = new Map()
+    this.snapshotItems = []
+    const aliases: Record<string, string> = {}
+    try {
+      for (const entry of branch.slice(start + 1)) {
+        if (entry.type !== 'message') continue
+        const offset = this.snapshotItems.length
+        this.write(entry.message, entry.id, 'complete')
+        const live = this.ids.get(entry.message)
+        if (live)
+          for (const item of this.snapshotItems.slice(offset))
+            aliases[item.ref.id] = `${live}${item.ref.id.slice(entry.id.length)}`
+      }
+      return { items: this.snapshotItems, aliases }
+    } finally {
+      this.snapshotItems = undefined
+      this.calls = calls
+    }
   }
 
   private bind(session: AgentSession): void {
