@@ -1537,8 +1537,6 @@
   "file_preview.markdown.mode.preview": "Предпросмотр",
   "file_preview.markdown.mode.source": "Источник",
   "file_preview.markdown.read_error.title": "Не удалось прочитать этот файл",
-  "file_preview.markdown.too_large.description": "Файлы Markdown размером более {{limit}} МиБ не могут быть предпросмотрены.",
-  "file_preview.markdown.too_large.title": "Файл слишком большой",
   "file_preview.open_error": "Не удалось открыть этот файл",
   "file_preview.pdf.navigation_error": "Не удалось перейти к этому разделу PDF",
   "file_preview.text.empty.description": "Этот текстовый файл не содержит содержимого.",

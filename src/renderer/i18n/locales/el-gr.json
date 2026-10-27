@@ -1537,8 +1537,6 @@
   "file_preview.markdown.mode.preview": "Προεπισκόπηση",
   "file_preview.markdown.mode.source": "Πηγή",
   "file_preview.markdown.read_error.title": "Δεν ήταν δυνατή η ανάγνωση αυτού του αρχείου",
-  "file_preview.markdown.too_large.description": "Αρχεία Markdown μεγαλύτερα από {{limit}} MiB δεν μπορούν να προεπισκοπηθούν.",
-  "file_preview.markdown.too_large.title": "Το αρχείο είναι πολύ μεγάλο",
   "file_preview.open_error": "Δεν ήταν δυνατό να ανοίξει αυτό το αρχείο",
   "file_preview.pdf.navigation_error": "Δεν ήταν δυνατή η μετάβαση σε αυτήν την ενότητα του PDF",
   "file_preview.text.empty.description": "Αυτό το αρχείο κειμένου δεν έχει περιεχόμενο.",

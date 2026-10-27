@@ -1537,8 +1537,6 @@
   "file_preview.markdown.mode.preview": "Vista previa",
   "file_preview.markdown.mode.source": "Fuente",
   "file_preview.markdown.read_error.title": "No se pudo leer este archivo",
-  "file_preview.markdown.too_large.description": "Los archivos Markdown de más de {{limit}} MiB no se pueden previsualizar.",
-  "file_preview.markdown.too_large.title": "El archivo es demasiado grande",
   "file_preview.open_error": "No se pudo abrir este archivo",
   "file_preview.pdf.navigation_error": "No se pudo ir a esta sección del PDF",
   "file_preview.text.empty.description": "Este archivo de texto no tiene contenido.",

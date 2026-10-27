@@ -1537,8 +1537,6 @@
   "file_preview.markdown.mode.preview": "Önizleme",
   "file_preview.markdown.mode.source": "Kaynak",
   "file_preview.markdown.read_error.title": "Bu dosya okunamadı",
-  "file_preview.markdown.too_large.description": "{{limit}} MiB boyutundan büyük Markdown dosyaları önizlenemez.",
-  "file_preview.markdown.too_large.title": "Dosya çok büyük",
   "file_preview.open_error": "Bu dosya açılamadı",
   "file_preview.pdf.navigation_error": "Bu PDF bölümüne gidilemedi.",
   "file_preview.text.empty.description": "Bu metin dosyasında içerik yok.",

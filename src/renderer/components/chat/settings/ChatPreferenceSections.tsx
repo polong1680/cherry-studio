@@ -100,8 +100,6 @@ const ChatPreferenceSections: FC<ChatPreferenceSectionsProps> = ({ sectionClassN
   const [codeWrappable, setCodeWrappable] = usePreference('chat.code.wrappable')
   const [codeEditor, setCodeEditor] = useMultiplePreferences({
     enabled: 'chat.code.editor.enabled',
-    themeLight: 'chat.code.editor.theme_light',
-    themeDark: 'chat.code.editor.theme_dark',
     highlightActiveLine: 'chat.code.editor.highlight_active_line',
     foldGutter: 'chat.code.editor.fold_gutter',
     autocompletion: 'chat.code.editor.autocompletion',
@@ -167,30 +165,14 @@ const ChatPreferenceSections: FC<ChatPreferenceSectionsProps> = ({ sectionClassN
     []
   )
 
-  const codeStyle = useMemo(() => {
-    return codeEditor.enabled
-      ? theme === ThemeMode.light
-        ? codeEditor.themeLight
-        : codeEditor.themeDark
-      : theme === ThemeMode.light
-        ? codeViewer.themeLight
-        : codeViewer.themeDark
-  }, [
-    codeEditor.enabled,
-    codeEditor.themeLight,
-    codeEditor.themeDark,
-    theme,
-    codeViewer.themeLight,
-    codeViewer.themeDark
-  ])
+  const codeStyle = theme === ThemeMode.light ? codeViewer.themeLight : codeViewer.themeDark
 
   const onCodeStyleChange = useCallback(
     (value: CodeStyleVarious) => {
       const field = theme === ThemeMode.light ? 'themeLight' : 'themeDark'
-      const action = codeEditor.enabled ? setCodeEditor : setCodeViewer
-      void action({ [field]: value })
+      void setCodeViewer({ [field]: value })
     },
-    [theme, codeEditor.enabled, setCodeEditor, setCodeViewer]
+    [theme, setCodeViewer]
   )
 
   const renderSection = (title: string, children: ReactNode) => (
@@ -482,7 +464,7 @@ const ChatPreferenceSections: FC<ChatPreferenceSectionsProps> = ({ sectionClassN
           <SettingRow id="setting-appearance-code-style" className="scroll-mt-6">
             <SettingRowTitleSmall>{t('message.message.code_style')}</SettingRowTitleSmall>
             <Select value={codeStyle} onValueChange={onCodeStyleChange}>
-              <SelectTrigger size="sm" className="w-[220px] text-sm">
+              <SelectTrigger aria-label={t('message.message.code_style')} size="sm" className="w-[220px] text-sm">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent className="text-sm">
