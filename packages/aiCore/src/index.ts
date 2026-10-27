@@ -81,7 +81,24 @@ export {
   Offloader,
   PERSISTED_OUTPUT_TAG,
   resolveCompressionOutputTokens,
-  summarizeModelMessages
+  MODEL_SCRATCHPAD_TAG_NAMES,
+  confirmedOpenFenceStreamPrefix,
+  stripKnownModelScratchpadBlocks,
+  stripKnownModelScratchpadBlocksPreservingCodeFences,
+  stripModelScratchpadBlocks,
+  stripTrailingToolProtocolClosingFragments,
+  summarizeModelMessages,
+  isPlausiblePartialTag,
+  shouldDeferScratchpadStripping,
+  textEndsWithPartialFenceMarker,
+  textHasUnclosedCodeFence,
+  textHasUnclosedInlineCode,
+  textHasUnclosedInlineCodeOutsideCodeBlocks,
+  textStartsWithModelScratchpadTag,
+  textStartsWithCompleteNonScratchpadMarkup,
+  textStartsWithNonScratchpadOpeningTag,
+  unclosedHtmlTextElementOpener,
+  unclosedOpaqueMarkupOpener
 } from './core/context'
 
 // ==================== 错误处理 ====================
