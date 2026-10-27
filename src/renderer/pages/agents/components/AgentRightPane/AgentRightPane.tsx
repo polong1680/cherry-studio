@@ -88,6 +88,7 @@ import { usePreference } from '@renderer/data/hooks/usePreference'
 import { useAgentSessionBackgroundTasks } from '@renderer/hooks/agent/useAgentSessionBackgroundTasks'
 import { useAgentSessionCompaction } from '@renderer/hooks/agent/useAgentSessionCompaction'
 import { useAgentSessionContextUsage } from '@renderer/hooks/agent/useAgentSessionContextUsage'
+import { useAgentSessionCost } from '@renderer/hooks/agent/useAgentSessionCost'
 import { useAgentSessionTaskEvents } from '@renderer/hooks/agent/useAgentSessionTaskEvents'
 import { useCurrentTabId } from '@renderer/hooks/tab'
 import { useDirectoryTree } from '@renderer/hooks/useDirectoryTree'
@@ -97,6 +98,7 @@ import { ipcApi, useIpcOn } from '@renderer/ipc'
 import { agentBrowserRuntimeService } from '@renderer/services/AgentBrowserRuntimeService'
 import { EVENT_NAMES, EventEmitter } from '@renderer/services/EventService'
 import { toast } from '@renderer/services/toast'
+import type { FileSourceLocation } from '@renderer/types/fileSourceLocation'
 import type { SelectionReference } from '@renderer/types/selectionReference'
 import { type Topic, TopicType } from '@renderer/types/topic'
 import { buildAgentFileWorkspaceKey, buildAgentSessionTopicId } from '@renderer/utils/agentSession'
@@ -258,7 +260,7 @@ interface AgentRightPaneActions {
   canOpenArtifactFile: boolean
   canPreviewInputFileInRightPane: boolean
   openAgentToolFlow: (input: AgentToolFlowOpenInput, nested?: boolean) => void
-  openArtifactFile: (path: string) => void
+  openArtifactFile: (path: string, sourceLocation?: FileSourceLocation) => void
   openFileFromPreview: (path: string) => void
   previewInputFileInRightPane: (input: MessageInputFilePreview) => void
   openBrowserUrl?: (url: string) => void
@@ -445,13 +447,15 @@ function AgentRightPaneActionsProvider({
     [canOpenAgentToolFlow, panelActions, replaceFlowTab]
   )
   const openArtifactFileTarget = useCallback(
-    (path: string, fromPreview: boolean) => {
+    (path: string, fromPreview: boolean, sourceLocation?: FileSourceLocation) => {
       if (!canOpenArtifactFile) return
       const requestId = artifactOpenRequestRef.current + 1
       artifactOpenRequestRef.current = requestId
-      const selection = resolveArtifactPaneFileSelection(workspacePath, resolveInlineFilePath(path))
+      const resolved = resolveArtifactPaneFileSelection(workspacePath, resolveInlineFilePath(path))
+      const selection: ArtifactPaneFileSelection | null =
+        resolved && sourceLocation ? { ...resolved, sourceLocation, previewType: 'file', readOnly: true } : resolved
       const htmlUrl = selection ? toBrowsableHtmlUrl(getArtifactPaneSelectionPath(selection)) : null
-      if (htmlUrl) {
+      if (htmlUrl && !sourceLocation) {
         openBrowserUrl(htmlUrl)
         panelActions.tryOpen(BROWSER_PANE_ID, { userInitiated: true })
         return
@@ -503,7 +507,10 @@ function AgentRightPaneActionsProvider({
       workspacePath
     ]
   )
-  const openArtifactFile = useCallback((path: string) => openArtifactFileTarget(path, false), [openArtifactFileTarget])
+  const openArtifactFile = useCallback(
+    (path: string, sourceLocation?: FileSourceLocation) => openArtifactFileTarget(path, false, sourceLocation),
+    [openArtifactFileTarget]
+  )
   const openFileFromPreview = useCallback(
     (path: string) => openArtifactFileTarget(path, true),
     [openArtifactFileTarget]
@@ -757,6 +764,7 @@ function AgentRightPaneStateProvider({
   const requestFileSelection = useCallback(
     (selection: ArtifactPaneFileSelection | null, onAccepted?: () => void) => {
       if (isSameFileSelection(previewFileSelection, selection)) {
+        setPreviewFileSelection(selection)
         onAccepted?.()
         return
       }
@@ -1584,6 +1592,7 @@ function AgentStatusRightPanel({ active }: RightPanelComponentProps<AgentRightPa
   const actions = useAgentRightPaneActions()
   const status = useAgentRightPaneStatus(active)
   const { usage, percentage, maxTokens } = useAgentSessionContextUsage(meta.sessionId, meta.model)
+  const cost = useAgentSessionCost(meta.sessionId)
   const compaction = useAgentSessionCompaction(meta.sessionId)
   const isCompacting = compaction.status === 'compacting'
   const artifacts = actions.canOpenArtifactFile ? status.artifacts : []
@@ -1593,6 +1602,7 @@ function AgentStatusRightPanel({ active }: RightPanelComponentProps<AgentRightPa
       {artifacts.length > 0 && <AgentRightPaneArtifactsSection artifacts={artifacts} compact={false} />}
 
       <AgentContextUsageSummary
+        cost={cost}
         usage={usage}
         percentage={percentage}
         maxTokens={maxTokens}
@@ -1813,12 +1823,14 @@ function AgentRightPaneStatusPreview() {
   const meta = useAgentRightPaneMeta()
   const status = useAgentRightPaneStatus()
   const { usage, percentage, maxTokens } = useAgentSessionContextUsage(meta.sessionId, meta.model)
+  const cost = useAgentSessionCost(meta.sessionId)
   const compaction = useAgentSessionCompaction(meta.sessionId)
   const isCompacting = compaction.status === 'compacting'
 
   return (
     <Scrollbar className="-mr-2 max-h-[calc(70vh-1.5rem)] space-y-3 overflow-x-hidden pr-3">
       <AgentContextUsageSummary
+        cost={cost}
         usage={usage}
         percentage={percentage}
         maxTokens={maxTokens}

@@ -2,6 +2,8 @@ import { FileQuestion, FileWarning, FileX2, FolderOpen, LoaderCircle } from 'luc
 import {
   type ComponentType,
   type ReactNode,
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -34,6 +36,7 @@ import type {
 
 const logger = loggerService.withContext('FilePreview')
 const TEXT_CONTENT_PLUGIN_IDS = new Set(['html', 'markdown', 'text'])
+const TextSourcePreview = lazy(textFilePreviewPlugin.load)
 
 type FilePreviewStateKind = 'directory' | 'invalid_path' | 'load_error' | 'unavailable' | 'unsupported'
 
@@ -125,6 +128,7 @@ interface FilePreviewPluginRendererProps {
   filePath: AbsoluteFilePath
   metadata: FilePreviewFileMetadata
   metadataRequest?: FilePreviewMetadataRequest
+  sourceLocation?: FilePreviewPluginProps['sourceLocation']
   onSelectionReference?: FilePreviewPluginProps['onSelectionReference']
   plugin: { descriptor: FilePreviewPlugin; component: ComponentType<FilePreviewPluginProps> }
   refreshKey: number
@@ -149,11 +153,15 @@ function FilePreviewPluginRenderer({
   metadata,
   metadataRequest,
   onSelectionReference,
+  sourceLocation,
   plugin,
   refreshKey,
   type
 }: FilePreviewPluginRendererProps) {
-  const PluginPreview = plugin.component
+  const PluginPreview =
+    sourceLocation && TEXT_CONTENT_PLUGIN_IDS.has(plugin.descriptor.id) && plugin.descriptor.id !== 'text'
+      ? TextSourcePreview
+      : plugin.component
 
   return (
     <ErrorBoundary
@@ -161,15 +169,18 @@ function FilePreviewPluginRenderer({
       resetKeys={[refreshKey]}
       FallbackComponent={PluginErrorFallback}
       onError={(error) => logger.error(`Failed to render file preview plugin: ${plugin.descriptor.id}`, error)}>
-      <PluginPreview
-        filePath={filePath}
-        fileName={fileName}
-        metadata={metadata}
-        metadataRequest={metadataRequest}
-        onSelectionReference={onSelectionReference}
-        refreshKey={refreshKey}
-        type={type}
-      />
+      <Suspense fallback={<FilePreviewLoading />}>
+        <PluginPreview
+          filePath={filePath}
+          fileName={fileName}
+          metadata={metadata}
+          metadataRequest={metadataRequest}
+          sourceLocation={sourceLocation}
+          onSelectionReference={onSelectionReference}
+          refreshKey={refreshKey}
+          type={type}
+        />
+      </Suspense>
     </ErrorBoundary>
   )
 }
@@ -179,6 +190,7 @@ export interface FilePreviewProps {
   header?: ReactNode
   refreshKey?: number
   type?: FilePreviewType
+  sourceLocation?: FilePreviewPluginProps['sourceLocation']
   /** See {@link FilePreviewPluginProps.onSelectionReference}; callbacks from obsolete metadata are ignored. */
   onSelectionReference?: FilePreviewPluginProps['onSelectionReference']
 }
@@ -207,7 +219,8 @@ export function FilePreview({
   header,
   refreshKey = 0,
   type = 'file',
-  onSelectionReference
+  onSelectionReference,
+  sourceLocation
 }: FilePreviewProps) {
   const file = useMemo(() => {
     try {
@@ -343,6 +356,11 @@ export function FilePreview({
         metadata={resolution.metadata}
         metadataRequest={metadataRequest?.read}
         onSelectionReference={onSelectionReference ? reportSelection : undefined}
+        sourceLocation={
+          sourceLocation && Number.isInteger(sourceLocation.line) && sourceLocation.line > 0
+            ? sourceLocation
+            : undefined
+        }
         plugin={resolution.plugin}
         refreshKey={refreshKey}
         type={type}
