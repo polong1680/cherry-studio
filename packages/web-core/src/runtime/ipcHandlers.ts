@@ -2,16 +2,22 @@ import { application } from '@application'
 import { agentWorkspaceService } from '@data/services/AgentWorkspaceService'
 import { aiHandlers } from '@main/ipc/handlers/ai'
 import { trashHandlers } from '@main/ipc/handlers/trash'
+import { dispatchHandle } from '@main/services/file/internal/dispatch'
+import type { TreeOwner } from '@main/services/file/tree/DirectoryTreeManager'
+import { readByPath, readChunkByPath } from '@main/services/file/utils/content'
+import { getMetadataByPath } from '@main/services/file/utils/metadata'
 import { ThemeMode } from '@shared/data/preference/preferenceTypes'
+import type { FileHandle } from '@shared/data/types/file'
 import { ipcRequestSchemas, type IpcRequestSchemas } from '@shared/ipc/schemas/ipcSchemas'
 import type { IpcHandlersFor } from '@shared/ipc/types'
 
 import { version } from '../../../../package.json'
 import { isLocalFolderPath } from '../agent/localFolders'
 import { unsupported } from '../disabled/unsupported'
+import { PAGE_WINDOW_ID } from '../services/WebWindowManager'
 import { NATIVE_THEME_CHANNEL } from '../worker/protocol'
 import { purgeArchiveNow } from './archivePurge'
-import { ipcMain } from './electron'
+import { ipcMain, pageWebContents } from './electron'
 
 // The page reports its `prefers-color-scheme`, which Electron's `nativeTheme` gives the desktop main process.
 let nativeTheme: ThemeMode.light | ThemeMode.dark = ThemeMode.light
@@ -20,10 +26,19 @@ ipcMain.on(NATIVE_THEME_CHANNEL, (_event, theme) => {
   application.get('IpcApiService').broadcast('system.native_theme_updated', nativeTheme)
 })
 
+/** The page owns every directory tree: it is the only window. */
+const pageTreeOwner: TreeOwner = {
+  windowId: PAGE_WINDOW_ID,
+  webContents: pageWebContents as unknown as TreeOwner['webContents']
+}
+
+/** Files in the library (attachments) are not served; the file preview reads the agent's files by path. */
+const libraryFiles = unsupported('Library files')
+
 /**
  * IpcApi routes the Web edition serves: chat streams, agent creation, tool approvals, the agent
- * session runtime, archiving and deleting, local-folder workspaces, and Web answers to what the
- * desktop shell asks at start.
+ * session runtime, archiving and deleting, local-folder workspaces, the agent's file tree and file
+ * preview, and Web answers to what the desktop shell asks at start.
  */
 const servedHandlers: Partial<IpcHandlersFor<IpcRequestSchemas>> = {
   'ai.stream.open': aiHandlers['ai.stream.open'],
@@ -59,6 +74,28 @@ const servedHandlers: Partial<IpcHandlersFor<IpcRequestSchemas>> = {
     if (!isLocalFolderPath(path)) throw new Error(`Not a local folder the user picked: ${path}`)
     return agentWorkspaceService.findOrCreateByPath(path, { name })
   },
+  'file.tree.create': ({ rootPath, options }) =>
+    application.get('DirectoryTreeManager').create(pageTreeOwner, rootPath, options),
+  'file.tree.activate': async ({ treeId, revision }) =>
+    application.get('DirectoryTreeManager').activateTree(treeId, revision, pageWebContents.id),
+  'file.tree.dispose': async ({ treeId }) => {
+    application.get('DirectoryTreeManager').dispose(treeId, pageWebContents.id)
+  },
+  'file.tree.rename': async ({ treeId, oldPath, newName }) =>
+    application.get('DirectoryTreeManager').rename(treeId, oldPath, newName, pageWebContents.id),
+  'file.read': async ({ handle, options }) => {
+    if (options.mode === 'range') {
+      return dispatchHandle(handle as FileHandle, libraryFiles, (path) =>
+        readChunkByPath(path, options.offset, options.length)
+      )
+    }
+    return dispatchHandle(handle as FileHandle, libraryFiles, (path) =>
+      readByPath(path, { encoding: options.encoding, ...(options.withContentHash && { withContentHash: true }) })
+    )
+  },
+  // A missing or unreadable file is `null`, as on the desktop.
+  'file.get_metadata': async (handle) =>
+    dispatchHandle(handle as FileHandle, libraryFiles, getMetadataByPath).catch(() => null),
   'app.get_info': async () => ({
     version,
     isPackaged: true,
