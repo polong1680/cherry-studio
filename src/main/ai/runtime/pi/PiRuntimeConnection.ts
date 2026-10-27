@@ -76,6 +76,7 @@ import {
   resolvePiProviderInjectionForSession,
   usesPiGateway
 } from './modelInjection'
+import { formatPiOutputLimitDiagnostic, type PiOutputLimitDiagnostic } from './outputLimitDiagnostic'
 import {
   capturePiConnectionSnapshot,
   type PiConnectionSnapshot,
@@ -86,6 +87,7 @@ import { loadPiAi, loadPiSdk, loadPiVccExtension } from './piSdk'
 import { resolveResumeTokenSessionFile } from './piSessionFile'
 import { PiStreamAdapter, resolvePiMcpToolMetadata } from './piStreamAdapter'
 import { createPiProviderExtension } from './providerExtension'
+import { reportedOutputUsageObserver, type ReportedOutputUsage } from './reportedOutputUsage'
 
 const logger = loggerService.withContext('PiRuntimeConnection')
 
@@ -162,6 +164,9 @@ export class PiRuntimeConnection implements AgentRuntimeConnection {
   private resumeToken?: string
   private lastStopReason?: string
   private lastAgentError?: string
+  private lastOutputLimitDiagnostic?: PiOutputLimitDiagnostic
+  private reportedOutputUsage: ReportedOutputUsage = {}
+  private configuredMaxOutputTokens?: number
   private closed = false
   /** Injected model id (pi `apiModelId`), stamped on context-usage so the renderer's
    *  per-model usage filter matches the composer's model candidates. */
@@ -246,9 +251,15 @@ export class PiRuntimeConnection implements AgentRuntimeConnection {
     const pi = await loadPiSdk()
 
     const materializedProvider = await materializePiProviderStream(injection)
+    const configuredModel = injection.providerConfig.models?.find((model) => model.id === injection.modelId)
+    this.configuredMaxOutputTokens =
+      configuredModel && 'maxTokens' in configuredModel ? configuredModel.maxTokens : undefined
     const providerConfig = withPiInvocationCapture(
       materializedProvider.providerConfig,
-      withPiRequestEnvironment(materializedProvider.streamSimple, injection.requestEnvironment),
+      withPiRequestEnvironment(materializedProvider.streamSimple, injection.requestEnvironment, () => {
+        this.reportedOutputUsage = {}
+        return this.reportedOutputUsage
+      }),
       (message, metrics, pricingSnapshot) => this.recordProviderInvocation(message, metrics, pricingSnapshot),
       (model) => this.startProviderSpan(model),
       (model) => this.captureInvocationPricing(model.id)
@@ -658,8 +669,15 @@ export class PiRuntimeConnection implements AgentRuntimeConnection {
     if (event.type === 'tool_execution_end') this.endToolSpan(event)
 
     if (event.type === 'turn_end') {
-      const stopReason = (event.message as { stopReason?: string }).stopReason
+      const stopReason = event.message.role === 'assistant' ? event.message.stopReason : undefined
       if (stopReason) this.lastStopReason = stopReason
+      this.lastOutputLimitDiagnostic =
+        stopReason === 'length'
+          ? {
+              configuredMaxTokens: this.configuredMaxOutputTokens,
+              ...this.reportedOutputUsage
+            }
+          : undefined
       return
     }
 
@@ -680,6 +698,7 @@ export class PiRuntimeConnection implements AgentRuntimeConnection {
       if (event.willRetry) {
         this.lastStopReason = undefined
         this.lastAgentError = undefined
+        this.lastOutputLimitDiagnostic = undefined
         return
       }
       this.lastAgentError = lastErrorMessage(event.messages)
@@ -706,8 +725,9 @@ export class PiRuntimeConnection implements AgentRuntimeConnection {
         failure = error
       } else if (this.lastStopReason === 'length') {
         failure = new Error(
-          this.lastAgentError ??
-            'Response truncated at the model output limit (stopReason: length). The reply may be incomplete or empty — try continuing the turn or retrying with a higher maximum output.'
+          formatPiOutputLimitDiagnostic(
+            this.lastOutputLimitDiagnostic ?? { configuredMaxTokens: this.configuredMaxOutputTokens }
+          )
         )
       } else {
         failure = new Error(this.lastAgentError ?? 'pi agent turn failed')
@@ -730,6 +750,7 @@ export class PiRuntimeConnection implements AgentRuntimeConnection {
     }
     this.lastStopReason = undefined
     this.lastAgentError = undefined
+    this.lastOutputLimitDiagnostic = undefined
   }
 
   /** Capture at the provider stream boundary so compaction calls and ordinary turns share one owner. */
@@ -1023,7 +1044,8 @@ interface PiProviderSpanObserver {
 
 function withPiRequestEnvironment(
   streamSimple: NonNullable<ProviderConfig['streamSimple']>,
-  providerEnvironment: Record<string, string> | undefined
+  providerEnvironment: Record<string, string> | undefined,
+  beginReportedUsage: () => ReportedOutputUsage
 ): NonNullable<ProviderConfig['streamSimple']> {
   return (model, context, options) => {
     const proxyEnvironment = getProxyEnvironment(process.env)
@@ -1033,7 +1055,9 @@ function withPiRequestEnvironment(
     return streamSimple(model, context, {
       ...options,
       env: { ...options?.env, ...proxyEnvironment, ...providerEnvironment },
-      fetch: usesAuthenticatedNodeProxy ? (nodeFetch as unknown as typeof globalThis.fetch) : customFetch
+      // oxlint-disable-next-line typescript/no-unnecessary-type-assertion
+      fetch: usesAuthenticatedNodeProxy ? (nodeFetch as unknown as typeof globalThis.fetch) : customFetch,
+      onProviderStreamEvent: reportedOutputUsageObserver(beginReportedUsage(), options?.onProviderStreamEvent)
     })
   }
 }
