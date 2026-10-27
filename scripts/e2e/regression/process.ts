@@ -22,7 +22,7 @@ export function isAlive(pid: number): boolean {
   }
 }
 
-function processCommand(pid: number, platform: Platform): string {
+export function processCommand(pid: number, platform: Platform): string {
   try {
     return platform === 'windows'
       ? execFileSync(
@@ -92,7 +92,14 @@ export function terminateOwnedMacProcessGroup(record: ProcessOwner, signal: 'SIG
     }
   } else {
     const expected = record.mode === 'tag' ? record.executablePath : record.targetRoot
-    if (!expected || !members.some((member) => member[3].includes(expected))) {
+    const appContents =
+      record.mode === 'tag' ? record.executablePath?.match(/^(.*\.app\/Contents)\/MacOS\/[^/]+$/)?.[1] : undefined
+    if (
+      !expected ||
+      !members.some(
+        (member) => member[3].includes(expected) || (appContents && member[3].startsWith(`${appContents}/Frameworks/`))
+      )
+    ) {
       throw new Error('Refusing cleanup: orphaned process group does not match the owned application')
     }
   }
@@ -201,4 +208,17 @@ export function findListeningPid(platform: Platform, port: number): number | und
 
 export function findCdpPid(platform: Platform): number | undefined {
   return findListeningPid(platform, CDP_PORT)
+}
+
+/** Process group of a live process; the group is what macOS cleanup signals. */
+export function findProcessGroupId(pid: number, platform: Platform): number | undefined {
+  if (platform === 'windows') return undefined
+  try {
+    const groupId = Number(
+      execFileSync('ps', ['-o', 'pgid=', '-p', String(pid)], { encoding: 'utf8', timeout: 10_000 }).trim()
+    )
+    return Number.isSafeInteger(groupId) && groupId > 0 ? groupId : undefined
+  } catch {
+    return undefined
+  }
 }

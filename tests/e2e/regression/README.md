@@ -5,14 +5,17 @@ The separate [Playwright config](../../../playwright.regression.config.ts) uses 
 
 ## File organization
 
-- Numbered `*.test.ts` files are the ten CI phases, ordered from startup to runtime tasks.
+- `phases/*.test.ts` files register the CI phases. Phase IDs match their camelCase file stems, without numeric prefixes. The manifest's first-occurrence order in `scripts/e2e/regression/cases.ts` defines the phase order; the workflow follows that order rather than filename sorting.
+- `scenarios/*.ts` files implement individual case workflows. Keep their names aligned with the exported scenario function or the behavior under test.
+- `helpers/*.ts` files contain reusable navigation, model setup, and domain interactions. Use camelCase names for function modules.
+- `fixtures/` contains test data, sample skills, and HTTP/MCP servers. Executable Node servers may use `.mjs`; sample skills retain their required `SKILL.md` convention.
 - `fixture.ts` validates required capabilities and owns each test's CDP connection and failure evidence.
 - `RegressionApp.ts` locates windows and delegates process operations. Connecting or locating a window does not change application preferences.
 - `setup.ts` explicitly establishes English locale, onboarding/telemetry settings, and disabled desktop assistants before each non-startup scenario.
-- Domain helpers such as `models.ts`, `knowledge.ts`, and `agents.ts` express reusable user workflows.
-- `navigation.ts` and `settings.ts` own shared navigation; `chat.ts` owns chat interactions and response assertions.
+- Domain helpers such as `helpers/models.ts`, `helpers/knowledge.ts`, and `helpers/agents.ts` express reusable user workflows.
+- `helpers/navigation.ts` and `helpers/settings.ts` own shared navigation; `helpers/chat.ts` owns chat interactions and response assertions.
 - The controller owns `RegressionReporter.ts` and its unit tests.
-- Helpers import Playwright assertions directly; only scenarios import the extended `test` from `fixture.ts`.
+- Phase entry points import the extended `test` from `fixture.ts`. Scenario implementations and helpers use Playwright assertions directly and do not register tests.
 
 ## State ownership
 
@@ -23,15 +26,15 @@ The built-in assistant's tests start new tasks and clear skill tokens where requ
 
 A failed scenario must not supply the expected result for another scenario. Assert a new assistant response, a newly written file, or a real native event; do not inject success markers through IPC.
 
-The `knowledge` task is one end-to-end case (`K-01`): create and index a knowledge
+The `knowledge-smoke` task is one end-to-end case (`K-01`): create and index a knowledge
 base, verify recall, restart the application, then query the persisted base and
-verify the answer and citations. It imports the fixtures only once. The former
-`knowledge-import` and `knowledge-qa` task IDs are replaced by `knowledge`.
+verify the answer and citations. It imports the fixtures only once. The `knowledge`
+module task also includes the implemented knowledge case-library scenarios.
 
 ## Adding or selecting a case
 
-1. Add the case to `scripts/e2e/regression/cases.ts`, including its phase, task, and required capabilities.
-2. Register it with `test(...caseDefinition('CASE-ID'), async ({ app, mainWindow }) => { ... })`.
+1. Add the case to `scripts/e2e/regression/cases.ts`, including its phase, module and focused `tasks`, and required capabilities. Task IDs remain English kebab-case and are independent of phase IDs.
+2. Register it in `phases/<phaseId>.test.ts` with `test(...caseDefinition('CASE-ID'), async ({ app, mainWindow }) => { ... })`.
 3. Establish its preconditions in the scenario or domain helper. Keep selectors scoped to the relevant product surface.
 4. Run manifest tests, typechecking, and Playwright enumeration. Add a workflow step only when introducing a new phase.
 
@@ -39,14 +42,17 @@ Use the task IDs from the manifest in the workflow's `task` input (`all` selects
 
 ```sh
 pnpm exec tsx scripts/e2e/regression/cli.ts run-phase \
-  --run-dir /absolute/run-directory --phase 02-basic-features
+  --run-dir /absolute/run-directory --phase basicFeatures
 ```
 
-The run's task selection controls which cases execute. To run only Notes, initialize with `--task notes`; do not narrow an all-task run manually and then treat it as a full pass.
+The run's task selection controls which cases execute. Use `--task notes` for all
+implemented Notes cases, including those in other phases, or `--task notes-smoke` for
+the create-and-save flow. Do not narrow an all-task run manually and then treat it as
+a full pass.
 
 ## Local streaming failure regression
 
-`chat-stream-failure` (`C-03`, phase `03-models-and-assistants`) needs no external
+`chat-stream-failure` (`C-03`, phase `modelsAndAssistants`) needs no external
 provider credentials. It uses the [shared mock chat HTTP server](../../helpers/http/README.md),
 seeds a case-owned provider and assistant through DataApi, and sends a message in
 the real UI. After partial text becomes visible, it destroys the HTTP connection
@@ -70,7 +76,7 @@ pnpm exec tsx scripts/e2e/regression/cli.ts initialize \
 pnpm exec tsx scripts/e2e/regression/cli.ts launch \
   --run-dir "$TEST_RUN_DIR" --target-root "$PWD" --run-key "$(basename "$TEST_RUN_DIR")"
 pnpm exec tsx scripts/e2e/regression/cli.ts run-phase \
-  --run-dir "$TEST_RUN_DIR" --phase 03-models-and-assistants
+  --run-dir "$TEST_RUN_DIR" --phase modelsAndAssistants
 pnpm exec tsx scripts/e2e/regression/cli.ts finalize --run-dir "$TEST_RUN_DIR"
 pnpm exec tsx scripts/e2e/regression/cli.ts gate --run-dir "$TEST_RUN_DIR"
 pnpm exec tsx scripts/e2e/regression/cli.ts cleanup --run-dir "$TEST_RUN_DIR"
@@ -85,6 +91,13 @@ while Electron is running, since native dependency rebuilds switch its ABI.
 
 ## Configuration and evidence
 
+`translation-settings` selects only MP-86. The case uses pinned aiMock responses for
+language detection and translation, while exercising the real settings UI, model
+routing, automatic clipboard copy, history and usage storage, and restart persistence.
+Its `data-source` annotation and request-journal attachment identify the mocked model
+boundary. Configured provider mode is recorded independently in the run reports;
+mock-mode success cannot substitute for real-provider acceptance.
+
 The repository variables/secrets are listed in `scripts/e2e/regression/config.ts`; the image model variable is `CHERRY_TEST_CHERRYIN_IMAGE_MODEL`.
 
 Custom chat provider creation fills two required endpoint URLs:
@@ -97,3 +110,22 @@ Both endpoints use `CHERRY_TEST_CUSTOM_PROVIDER_API_KEY`. The embedding provider
 Never attach credentials or enable credential-bearing Playwright traces. HTML reports and failure screenshots are produced by Playwright and the fixture; sanitized Electron logs are copied during finalization.
 
 Use the [frontend testing guidelines](../../../docs/references/testing/frontend-testing.md). Keep local changes separate from hosted runtime validation; successful enumeration and unit tests do not prove desktop permissions or external model availability.
+
+
+## Partial coverage
+
+A passing implemented flow does not cover capabilities absent from the current product. Scenarios record these gaps with `uncovered` annotations; they do not search for fictional controls.
+
+| Case | Implemented checks | Uncovered capability |
+| --- | --- | --- |
+| MP-18 | Message queue, hover card, attachment preview, copy source, MCP inline images, URL fallback and Chinese title search | A direct Delete action in the sent-image menu; public tool-result image URL previews; pinyin-initial search |
+| MP-19 | Markdown, DOCX, video, empty PPTX error, pasted-text preview and clipboard round trip | Rendering a nonempty PPTX; external-app fallback; a Quote selection button in plain-text previews |
+| MP-57 | Memory setting persistence and retained snapshots | Memory file-path display; runtime memory-tool exclusion is covered by `builtinAgentCapabilities.test.ts`, not by this E2E flow |
+| MP-69 | File categories, counts and clearing filters | Filename search and result highlighting |
+| MP-72 | Blocked; no executable reference flow | Referencing an existing library file from the composer |
+| MP-74 | Draft persistence and external-edit conflict handling | An explicit Saved status indicator |
+| MP-82 | Document import, size limit, translation and Notes export control | Source character counter, Markdown save-as and translated-file naming |
+| MP-90 | Preview zoom, pan, rotation and saving the original image | Image upscaling or enhancement |
+| MP-107 | Shortcut configuration, paste-as-file, delete confirmation and settings persistence | Live token counting in the draft composer |
+| MP-115 | Backup archive creation and backup-manager visibility | Native notification delivery |
+| MP-150 | Files RTF formatting, encoding, validation, preview switching, links and restart; Chat attachment transport | Ordinary Chat RTF side panel, a 360px side panel, and Shift-JIS/Big5 fixtures |

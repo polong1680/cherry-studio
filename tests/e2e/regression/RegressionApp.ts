@@ -6,10 +6,16 @@ import { chromium } from '@playwright/test'
 
 import { loadTestConfig, type RegressionTestConfig } from '../../../scripts/e2e/regression/config'
 import { prepareWindowsCdpConnection } from '../../../scripts/e2e/regression/debugBridge'
-import { ensureProfile, readAppRecord, restartApp, type AppRecord } from '../../../scripts/e2e/regression/lifecycle'
+import {
+  adoptRelaunchedApp,
+  ensureProfile,
+  readAppRecord,
+  restartApp,
+  type AppRecord
+} from '../../../scripts/e2e/regression/lifecycle'
 import { getRunPaths, type RunPaths } from '../../../scripts/e2e/regression/paths'
 import type { TestProfile } from '../../../scripts/e2e/regression/types'
-import { dismissTransientDialogs } from './navigation'
+import { dismissTransientDialogs } from './helpers/navigation'
 
 const MAIN_WINDOW_PATH = '/windows/main/index.html'
 
@@ -29,6 +35,10 @@ export class RegressionApp {
 
   get workspaceName(): string {
     return basename(this.paths.workspace)
+  }
+
+  fixturesPath(...segments: string[]): string {
+    return join(this.paths.fixtures, ...segments)
   }
 
   resourceName(name: string): string {
@@ -111,6 +121,13 @@ export class RegressionApp {
   async restart(profile?: TestProfile): Promise<Page> {
     await this.disconnect()
     const record = await restartApp(this.paths, profile)
+    await prepareWindowsCdpConnection(record)
+    return this.mainWindow()
+  }
+
+  async adoptRelaunch(): Promise<Page> {
+    await this.disconnect()
+    const record = await adoptRelaunchedApp(this.paths)
     await prepareWindowsCdpConnection(record)
     return this.mainWindow()
   }

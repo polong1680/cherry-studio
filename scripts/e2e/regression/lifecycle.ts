@@ -9,6 +9,7 @@ import {
   assertOwnedProcess,
   CDP_PORT,
   findCdpPid,
+  findProcessGroupId,
   isAlive,
   isDescendant,
   MAIN_INSPECTOR_PORT,
@@ -211,7 +212,7 @@ export async function launchApp(
   }
 }
 
-function readOwnedRecord(paths: RunPaths): LaunchRecord {
+export function readOwnedRecord(paths: RunPaths): LaunchRecord {
   const record = readJson<LaunchRecord>(paths.appRecord)
   if (record.schemaVersion !== 1 || record.ownership !== 'regression-driver' || record.policy !== 'ephemeral') {
     throw new Error('Refusing to control an unowned application record')
@@ -234,6 +235,13 @@ export async function stopOwnedApp(paths: RunPaths): Promise<void> {
 
 async function stopOwnedRecord(record: LaunchRecord): Promise<void> {
   if (record.platform === 'macos') {
+    if (record.mode === 'tag' && record.electronPid && isAlive(record.electronPid)) {
+      assertOwnedProcess(record, record.electronPid, 'electron')
+      // A relocation renderer exiting before its main process can schedule another relaunch.
+      terminateExactProcess(record.electronPid, record.platform)
+      await waitForExit(record.electronPid)
+      await waitForMacProcessGroupExit(record.runnerPid)
+    }
     terminateOwnedMacProcessGroup(record)
     if (!(await waitForMacProcessGroupExit(record.runnerPid))) {
       terminateOwnedMacProcessGroup(record, 'SIGKILL')
@@ -286,8 +294,36 @@ async function stopOwnedRecord(record: LaunchRecord): Promise<void> {
   }
 }
 
+/**
+ * Adopt the instance a packaged restore relaunched on its own. The replacement is not a
+ * descendant of the recorded runner, so cleanup has to be pointed at it explicitly.
+ */
+export async function adoptRelaunchedApp(paths: RunPaths, timeout = 120_000): Promise<AppRecord> {
+  const record = readAppRecord(paths)
+  if (record.mode !== 'tag') throw new Error('Only a packaged launch relaunches itself')
+  const deadline = Date.now() + timeout
+  while (Date.now() < deadline) {
+    const electronPid = findCdpPid(record.platform)
+    if (electronPid && electronPid !== record.electronPid && isAlive(electronPid)) {
+      const runnerPid = findProcessGroupId(electronPid, record.platform) ?? electronPid
+      const adopted: AppRecord = {
+        ...record,
+        runnerPid,
+        electronPid,
+        startedAt: new Date().toISOString(),
+        restartCount: record.restartCount + 1
+      }
+      assertOwnedProcess(adopted, electronPid, 'electron')
+      writeJson(paths.appRecord, adopted)
+      return readAppRecord(paths)
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 500))
+  }
+  throw new Error('The relaunched application did not take over the CDP port')
+}
+
 export async function restartApp(paths: RunPaths, profile?: TestProfile): Promise<AppRecord> {
-  const current = readAppRecord(paths)
+  const current = readOwnedRecord(paths)
   await stopOwnedApp(paths)
   return launchApp(paths, {
     mode: current.mode,
