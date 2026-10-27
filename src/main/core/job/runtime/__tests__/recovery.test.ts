@@ -3,7 +3,7 @@
  *
  * These pin the most regression-prone part of the fix for the startup-recovery
  * double-dispatch race (#16291): a job the CURRENT process is still executing
- * (reported via the `isJobInFlight` predicate) must be left untouched by ALL
+ * (reported via the `isOwnedByCurrentLaunch` predicate) must be left untouched by ALL
  * recovery branches — the exclusion sits at the TOP of the per-type loop, above
  * the cancelRequested override. The end-to-end JobManager integration test
  * proves the no-double-dispatch outcome; this proves the predicate filtering
@@ -132,7 +132,7 @@ describe('runStartupRecovery — in-flight exclusion', () => {
   // today, but these pin that "every branch" claim: if the filter were ever
   // moved into the retry branch, singleton would cancel/reset the live row and
   // abandon would cancel it mid-flight.
-  it('singleton: leaves the in-flight row untouched and applies the strategy only to orphans', async () => {
+  it('singleton: leaves the in-flight row untouched and cancels the orphan it supersedes', async () => {
     const type = 'task.singleton.unit.inflight'
     const dbh = MockMainDbServiceExport.dbService.getDb() as DbType
     const t0 = Date.now() - 5000
@@ -179,8 +179,8 @@ describe('runStartupRecovery — in-flight exclusion', () => {
     // filter, singleton keeps the newest (orphan) and CANCELS this older
     // in-flight row mid-flight.
     expect(inFlight?.status).toBe('running')
-    // The sole remaining row (orphan) becomes the kept singleton, reset to pending.
-    expect(orphan?.status).toBe('pending')
+    // This process already runs the one instance, so keeping the orphan too would run two.
+    expect(orphan?.status).toBe('cancelled')
   })
 
   it('abandon: cancels only the orphan and leaves the in-flight row running', async () => {
@@ -229,4 +229,51 @@ describe('runStartupRecovery — in-flight exclusion', () => {
     expect(inFlight?.status).toBe('running')
     expect(orphan?.status).toBe('cancelled')
   })
+})
+
+describe('runStartupRecovery — per-job recovery', () => {
+  setupTestDatabase()
+
+  beforeEach(() => {
+    const dbSvc = MockMainDbServiceExport.dbService
+    ;(application.get as ReturnType<typeof vi.fn<(...args: any[]) => any>>).mockImplementation((name: string) => {
+      if (name === 'DbService') return dbSvc
+      throw new Error(`Unexpected application.get('${name}')`)
+    })
+  })
+
+  it.each([
+    { handlerRecovery: 'retry', jobRecovery: 'abandon', expected: { own: 'cancelled', handlers: 'pending' } },
+    { handlerRecovery: 'abandon', jobRecovery: 'retry', expected: { own: 'pending', handlers: 'cancelled' } }
+  ] as const)(
+    'recovers a job enqueued with $jobRecovery that way, while its $handlerRecovery siblings follow the handler',
+    async ({ handlerRecovery, jobRecovery, expected }) => {
+      const type = `task.${handlerRecovery}.unit.override`
+      const dbh = MockMainDbServiceExport.dbService.getDb() as DbType
+      const now = Date.now()
+      const row = {
+        type,
+        status: 'running',
+        queue: type,
+        scheduledAt: now - 1000,
+        startedAt: now - 800,
+        attempt: 0,
+        maxAttempts: 1,
+        cancelRequested: false,
+        metadata: {}
+      }
+      const [own, handlers] = await dbh
+        .insert(jobTable)
+        .values([
+          { ...row, input: { marker: 'own' }, recovery: jobRecovery },
+          { ...row, input: { marker: 'handlers' } }
+        ])
+        .returning()
+
+      runStartupRecovery(handlersOf(type, handlerRecovery), () => false)
+
+      expect(jobService.getById(own.id)?.status).toBe(expected.own)
+      expect(jobService.getById(handlers.id)?.status).toBe(expected.handlers)
+    }
+  )
 })

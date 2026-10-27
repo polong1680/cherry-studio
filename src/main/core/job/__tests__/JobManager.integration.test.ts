@@ -229,6 +229,27 @@ describe('JobManager integration', () => {
       await teardownManager(scheduler, jobManager)
     })
 
+    it('recovers a job the way it was enqueued, over its handler, on the next launch', async () => {
+      const handlers: Array<[string, JobHandler]> = [['override.task', makeSlowHandler('retry') as JobHandler]]
+      const first = await bootstrapManager({ handlers })
+      const later = Date.now() + 10 * 60_000
+      const abandoned = first.jobManager.enqueue('override.task' as never, { message: 'a' } as never, {
+        scheduledAt: later,
+        recovery: 'abandon'
+      })
+      const resumed = first.jobManager.enqueue('override.task' as never, { message: 'b' } as never, {
+        scheduledAt: later
+      })
+      await teardownManager(first.scheduler, first.jobManager)
+
+      const second = await bootstrapManager({ handlers })
+
+      expect(jobService.getById(abandoned.id)?.status).toBe('cancelled')
+      expect(jobService.getById(resumed.id)?.status).toBe('delayed')
+
+      await teardownManager(second.scheduler, second.jobManager)
+    })
+
     it('cancelRequested: settles the leftover without disturbing a newer finished run in the projection', async () => {
       const dbh = MockMainDbServiceExport.dbService.getDb() as DbType
 
@@ -431,6 +452,65 @@ describe('JobManager integration', () => {
       const settled = await handle.finished
       expect(settled.status).toBe('completed')
       expect(executeCount).toBe(1)
+
+      await teardownManager(scheduler, jobManager)
+    })
+
+    it('abandon: runs a job this launch queued during the quiet window, still cancelling leftovers', async () => {
+      // Queued behind the concurrency cap, the job is non-terminal and not executing when the sweep
+      // fires, exactly like a leftover; cancelling it would leave `finished` unsettled.
+      const dbh = MockMainDbServiceExport.dbService.getDb() as DbType
+      const [leftover] = await dbh
+        .insert(jobTable)
+        .values({
+          type: 'queued.abandon',
+          status: 'running',
+          queue: 'queued.leftover',
+          scheduledAt: Date.now() - 1000,
+          startedAt: Date.now() - 800,
+          input: { message: 'leftover' }
+        })
+        .returning()
+      let releaseGate!: () => void
+      const gate = new Promise<void>((resolve) => {
+        releaseGate = resolve
+      })
+      const settledIds: string[] = []
+      const handler: JobHandler<SlowInput> = {
+        recovery: 'abandon',
+        defaultConcurrency: 1,
+        async execute(ctx) {
+          await Promise.race([
+            gate,
+            new Promise<never>((_, reject) =>
+              ctx.signal.addEventListener('abort', () => reject(new Error('AbortError')), { once: true })
+            )
+          ])
+          return { echoed: ctx.input.message } satisfies SlowOutput
+        },
+        onSettled(event) {
+          settledIds.push(event.jobId)
+        }
+      }
+
+      let running!: JobHandle
+      let queued!: JobHandle
+      const { scheduler, jobManager } = await bootstrapManager({
+        handlers: [['queued.abandon', handler as JobHandler]],
+        beforeRecovery: async (jm) => {
+          running = jm.enqueue('queued.abandon' as never, { message: 'running' } as never)
+          queued = jm.enqueue('queued.abandon' as never, { message: 'queued' } as never)
+          await drainAllQueues(jm)
+        }
+      })
+
+      expect(jobService.getById(leftover.id)?.status).toBe('cancelled')
+      expect(jobService.getById(queued.id)?.status).toBe('pending')
+
+      releaseGate()
+      expect((await running.finished).status).toBe('completed')
+      expect((await queued.finished).status).toBe('completed')
+      await vi.waitFor(() => expect(settledIds).toContain(queued.id))
 
       await teardownManager(scheduler, jobManager)
     })
