@@ -35,6 +35,13 @@ is native and conversation-scoped: the host must reuse the original immutable
 input and policy with its key. The host also persists the logical InputId mapping;
 a reopened runtime can return a native input reference without that host ID.
 
+`whenBusy: 'steer'` delivers input at the next native input boundary. If the current
+run finishes normally before taking it, the input starts a subsequent run. `follow-up`
+waits for the final boundary. Both policies start a run when the conversation is idle;
+normal completion does not discard accepted input. Explicit interruption still follows
+the native cancellation scope. Read `lookupInput` or `input.changed` to distinguish
+acceptance from placement and completion.
+
 Settled input exposes `response` from the native answer entry when available. Several submissions
 may share it. Native `done` alone is insufficient: Durable 1.3.0 also uses it for truncated output
 and tool-only termination. The adapter reads the actual assistant stop reason before reporting
@@ -46,10 +53,20 @@ enable the scheduler.
 Observations normalize committed `ConversationView` snapshots, live assistant
 partials, tool calls/results, and retained live tool output. Coverage is
 `current-view`, not a history archive. Persistent entries use native entry IDs;
-live previews use an internal source namespace. Where preview-to-entry association
-is not proven, the adapter emits `gap: mapping-reset` and a replacing snapshot.
+live previews use an internal source namespace. The adapter associates a disappearing
+preview only with a unique later entry produced by its native task. Where that
+association is not proven, it emits `gap: mapping-reset` and a replacing snapshot.
 Consumers must not merge these by text. Images and nested-tool progress are not
 represented by the current common text/reasoning protocol.
+
+`archive()` reads committed, conversation-owned history, including entries before
+reset and compaction. Inherited fork entries are excluded so a child archive does
+not import its parent's messages. Pagination is bounded by the head captured when
+the read begins; appends after that head belong to a later read. It neither resumes
+the Harness nor includes live previews. `aliases` maps committed item IDs to proven
+preview IDs from this observation source, including tool calls and results. These
+aliases are local to the open runtime; reopening retains committed IDs and starts
+with no preview aliases. The host owns persistent product-message associations.
 
 Native ownership records and live task graph edges expose `Subagent` relationships
 through `snapshot.subagents` and `subagent.upsert`. Their IDs use the native child
@@ -68,11 +85,14 @@ Offline tests use the native faux provider and native Memory/Node SQLite storage
 
 ```sh
 pnpm --filter @cherrystudio/agent-runtime build
-pnpm test:agent-runtime-pi-durable packages/agent-runtime-pi-durable/tests/runtime.test.ts
+pnpm test:agent-runtime-pi-durable packages/agent-runtime-pi-durable/tests/runtime.test.ts packages/agent-runtime-pi-durable/tests/projection.test.ts
 pnpm --filter @cherrystudio/agent-runtime-pi-durable typecheck
 ```
 
 The child test covers continued conversation, busy rejection, steering, independent
 observation after release, stable relationship identity, and unchanged parent output.
-The SQLite test closes and reopens an orderly runtime; it is not a crash-recovery or
-external-tool side-effect test. No live provider or Electron acceptance is claimed.
+Archive tests cover pagination, reset, fork ownership and stable identities after
+SQLite reopen. Projection tests cover repeated text, ambiguous coalesced frames,
+retries and tool progress. The SQLite test closes and reopens an orderly runtime;
+it is not a crash-recovery or external-tool side-effect test. No live provider or
+Electron acceptance is claimed.
