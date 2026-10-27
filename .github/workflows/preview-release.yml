@@ -192,7 +192,7 @@ jobs:
       actions: read
     steps:
       - name: Summarize preview artifacts
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
