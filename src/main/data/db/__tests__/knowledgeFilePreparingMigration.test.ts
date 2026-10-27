@@ -1,9 +1,10 @@
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
 
 import { setupTestDatabase } from '@test-helpers/db'
 import { asc, eq } from 'drizzle-orm'
-import { describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it } from 'vitest'
 
 import { applyMigrations } from '@data/db/applyMigrations'
 import { knowledgeBaseTable, knowledgeItemTable } from '@data/db/schemas/knowledge'
@@ -16,14 +17,23 @@ const NOTE_ID = '0198f3f2-7d1c-7abc-8def-123456789abc'
 
 // Letting file items use `preparing` rebuilds knowledge_item; an upgrade must keep every row and the child cascade.
 describe('knowledge file preparing migrate-forward', () => {
-  const dbh = setupTestDatabase()
+  const baseline = mkdtempSync(join(tmpdir(), 'knowledge-preparing-baseline-'))
+  const migrationsFolder = resolve('migrations/sqlite-drizzle')
+  const journal = JSON.parse(readFileSync(join(migrationsFolder, 'meta/_journal.json'), 'utf8')) as {
+    entries: Array<{ tag: string }>
+  }
+  const targetIndex = journal.entries.findIndex((entry) => entry.tag === '0028_slow_ravenous')
+  if (targetIndex < 0) throw new Error('Knowledge file preparing migration not found')
+  const entries = journal.entries.slice(0, targetIndex)
+  mkdirSync(join(baseline, 'meta'))
+  writeFileSync(join(baseline, 'meta/_journal.json'), JSON.stringify({ ...journal, entries }))
+  for (const entry of entries) {
+    copyFileSync(join(migrationsFolder, `${entry.tag}.sql`), join(baseline, `${entry.tag}.sql`))
+  }
+  const dbh = setupTestDatabase({ migrationsFolder: baseline })
+  afterAll(() => rmSync(baseline, { recursive: true, force: true }))
 
   it('rebuilds a populated knowledge_item table without losing rows or the child cascade', () => {
-    const migrationsFolder = resolve('migrations/sqlite-drizzle')
-    const journal = JSON.parse(readFileSync(resolve(migrationsFolder, 'meta/_journal.json'), 'utf8')) as {
-      entries: Array<{ tag: string; when: number }>
-    }
-    const migration = journal.entries.find((entry) => entry.tag === '0028_slow_ravenous')!
     dbh.db
       .insert(knowledgeBaseTable)
       .values({ id: BASE_ID, name: 'KB', orderKey: 'a0', status: 'completed', chunkSize: 1024, chunkOverlap: 200 })
@@ -53,7 +63,6 @@ describe('knowledge file preparing migrate-forward', () => {
     const readItems = () => dbh.db.select().from(knowledgeItemTable).orderBy(asc(knowledgeItemTable.id)).all()
     const before = readItems()
 
-    dbh.sqlite.prepare('DELETE FROM __drizzle_migrations WHERE created_at >= ?').run(migration.when)
     applyMigrations(dbh.db, migrationsFolder)
 
     expect(readItems()).toEqual(before)
