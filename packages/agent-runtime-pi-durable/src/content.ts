@@ -1,7 +1,14 @@
 import type { Message } from '@earendil-works/pi-ai'
 import type { EntryRecord } from '@earendil-works/pi-durable'
 
-import { runtimeId, type ContentItem, type ContentPart, type ItemRef, type Thread } from '@cherrystudio/agent-runtime'
+import {
+  runtimeId,
+  type ContentItem,
+  type ContentPart,
+  type ItemRef,
+  type JsonValue,
+  type Thread
+} from '@cherrystudio/agent-runtime'
 
 /** Stable committed identities; consumers never decode native entry IDs from these keys. */
 export const entryItemId = (entry: EntryRecord, index: number): string => `entry:${entry.id}:${index}`
@@ -17,10 +24,18 @@ export class ContentProjection {
   }
 
   entry(entry: EntryRecord): void {
-    entry.model?.forEach((message, index) => this.message(message, entryItemId(entry, index), 'complete'))
+    for (const [index, message] of (entry.model ?? []).entries()) {
+      this.message(message, entryItemId(entry, index), 'complete')
+      const inputId = (entry.data as { cherryInputId?: string })?.cherryInputId
+      if (message.role === 'user' && inputId) {
+        const item = this.items.at(-1)!
+        if (item.type === 'message') this.items[this.items.length - 1] = { ...item, inputId: runtimeId(inputId) }
+      }
+    }
   }
 
   message(message: Message, id: string, completeness: 'partial' | 'complete'): void {
+    if (message.role === 'system') return
     const parts: ContentPart[] = []
     const toolCalls: ContentItem[] = []
     if (typeof message.content === 'string') parts.push({ type: 'text', text: message.content })
@@ -46,7 +61,17 @@ export class ContentProjection {
         type: 'tool-result',
         call: this.calls.get(message.toolCallId),
         parts,
-        outcome: message.isError ? 'error' : 'success'
+        outcome: message.isError ? 'error' : 'success',
+        data: {
+          content: message.content.map(
+            (part): JsonValue =>
+              part.type === 'text'
+                ? { type: 'text', text: part.text }
+                : { type: 'image', data: part.data, mimeType: part.mimeType }
+          ),
+          ...(message.details !== undefined && { details: message.details }),
+          isError: message.isError
+        }
       })
     else this.items.push({ ref: this.ref(id), type: 'message', role: message.role, parts, completeness })
     this.items.push(...toolCalls)
