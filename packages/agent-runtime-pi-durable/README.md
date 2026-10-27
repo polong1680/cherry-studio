@@ -103,6 +103,9 @@ It names the first generation task and survives tool/model handovers within that
 Queued input acquires its run only when consumed. A late steer can therefore belong to
 a later run without `onlyInRun` or a conditional-admission restriction. Usage, answers
 and targeted stop read that native identity; stopping an older run cannot stop its successor.
+A starting input also retains the behavior run reservation in its native entry. The adapter
+reconstructs skipped numbers with zero usage, so stopping a child before its first input
+does not shift the identity of its next run. Reservations never restrict steer admission.
 
 The concrete `durable` facet exposes native configuration, compaction, behavior facts,
 provider session identity and tool-call resolution for the desktop adapter. These stay
