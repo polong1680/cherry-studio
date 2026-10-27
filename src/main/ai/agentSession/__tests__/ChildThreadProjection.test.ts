@@ -26,7 +26,7 @@ afterEach(async () => {
   vi.restoreAllMocks()
 })
 
-function fixture() {
+function fixture(beforeRead?: () => Promise<void>) {
   const workspaceId = randomUUID()
   dbh.db
     .insert(agentWorkspaceTable)
@@ -57,7 +57,8 @@ function fixture() {
   }
   const archive: { items: ContentItem[]; aliases: Record<string, string> } = { items: [], aliases: {} }
   let unavailable = false
-  const projection = new ChildThreadProjection(context, handle, () => {
+  const projection = new ChildThreadProjection(context, handle, async () => {
+    await beforeRead?.()
     if (unavailable) throw new Error('History temporarily unavailable')
     return archive
   })
@@ -80,6 +81,54 @@ function fixture() {
     }
   }
 }
+
+// Catches asynchronous native archives losing a completion that arrives while the previous read is in flight.
+it('serializes asynchronous archives with live completion and retains the preview identity', async () => {
+  let release: (() => void) | undefined
+  const f = fixture(
+    () =>
+      new Promise<void>((resolve) => {
+        release = resolve
+      })
+  )
+  const attach = f.projection.attach()
+  await expect.poll(() => release !== undefined).toBe(true)
+  release!()
+  await attach
+  await f.send({ type: 'item.upsert', item: f.item('preview', 'partial', 'partial') })
+  await f.projection.flush()
+  const id = f.projection.snapshot().messages[0].id
+  await f.send({
+    type: 'snapshot',
+    coverage: 'current-view',
+    items: [f.item('preview', 'partial', 'partial')],
+    inputs: [],
+    activity: { scope: 'foreground', state: 'active' }
+  })
+  release = undefined
+  const pending = f.projection.flush()
+  await expect.poll(() => release !== undefined).toBe(true)
+  f.archive.items = [f.item('entry', 'complete')]
+  f.archive.aliases = { entry: 'preview' }
+  await f.send({
+    type: 'snapshot',
+    coverage: 'current-view',
+    items: f.archive.items,
+    inputs: [],
+    activity: { scope: 'foreground', state: 'idle' }
+  })
+  release!()
+  await pending
+  release = undefined
+  const closing = f.projection.stop()
+  await expect.poll(() => release !== undefined).toBe(true)
+  release!()
+  await closing
+  projections.splice(projections.indexOf(f.projection), 1)
+  expect(savedChildView(f.context).messages).toMatchObject([
+    { id, parts: [{ type: 'text', text: 'complete', state: 'done' }] }
+  ])
+})
 
 // Catches a mutable SDK snapshot erasing the previous text before the transport computes a delta.
 it('publishes incremental text before completion and keeps previously delivered views stable', async () => {

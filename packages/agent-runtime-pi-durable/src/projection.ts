@@ -1,22 +1,17 @@
 import { randomUUID } from 'node:crypto'
 
-import type { Message } from '@earendil-works/pi-ai'
 import type { ConversationView, ConversationWatch, LiveState } from '@earendil-works/pi-durable'
 
-import {
-  runtimeId,
-  ThreadFeed,
-  type ContentItem,
-  type ContentPart,
-  type ItemRef,
-  type Thread
-} from '@cherrystudio/agent-runtime'
+import { ThreadFeed, type Thread } from '@cherrystudio/agent-runtime'
+
+import { ContentProjection, entryItemId } from './content'
 
 /** One normalized source shared by every access to a native conversation. */
 export class DurableProjection {
   readonly feed: ThreadFeed
   private readonly epoch = randomUUID()
-  private transientIds = new Set<string>()
+  private previews = new Map<string, { task: number; after: number; role: 'assistant' | 'toolResult' }>()
+  readonly aliases: Record<string, string> = {}
 
   constructor(
     readonly ref: Thread,
@@ -51,72 +46,51 @@ export class DurableProjection {
 
   private update(view: ConversationView): void {
     const live = view.docs['pi.live'] as LiveState | undefined
-    const items: ContentItem[] = []
-    const transientIds = new Set<string>()
-    const calls = new Map<string, ItemRef>()
-    const itemRef = (id: string): ItemRef => ({ session: this.ref, id: runtimeId(id) })
-    const append = (message: Message, id: string, completeness: 'partial' | 'complete') => {
-      const parts: ContentPart[] = []
-      const toolCalls: ContentItem[] = []
-      if (typeof message.content === 'string') parts.push({ type: 'text', text: message.content })
-      else
-        for (const part of message.content) {
-          if (part.type === 'text') parts.push({ type: 'text', text: part.text })
-          if (part.type === 'thinking') parts.push({ type: 'reasoning', text: part.thinking })
-          if (part.type === 'toolCall') {
-            const ref = itemRef(`${id}:call:${part.id}`)
-            calls.set(part.id, ref)
-            toolCalls.push({
-              ref,
-              type: 'tool-call',
-              name: part.name,
-              argumentsText: JSON.stringify(part.arguments),
-              completeness
-            })
-          }
-        }
-      if (message.role === 'toolResult')
-        items.push({
-          ref: itemRef(id),
-          type: 'tool-result',
-          call: calls.get(message.toolCallId),
-          parts,
-          outcome: message.isError ? 'error' : 'success'
-        })
-      else items.push({ ref: itemRef(id), type: 'message', role: message.role, parts, completeness })
-      items.push(...toolCalls)
-    }
-    for (const entry of view.entries) {
-      entry.model?.forEach((message, index) => append(message, `entry:${entry.id}:${index}`, 'complete'))
-    }
+    const content = new ContentProjection(this.ref)
+    const previews: typeof this.previews = new Map()
+    for (const entry of view.entries) content.entry(entry)
+    const after = view.entries.reduce((latest, entry) => Math.max(latest, entry.id), 0)
     const generation = live?.generation
     const nextLiveId =
-      generation?.message && live?.run
-        ? `live:${this.epoch}:${live.run.taskId}:${generation.attempt}:${view.entries.at(-1)?.id ?? 0}`
-        : undefined
+      generation?.message && live?.run ? `live:${this.epoch}:${live.run.taskId}:${generation.attempt}` : undefined
     if (generation?.message && nextLiveId) {
-      transientIds.add(nextLiveId)
-      append(generation.message, nextLiveId, 'partial')
+      previews.set(nextLiveId, { task: live!.run!.taskId, after, role: 'assistant' })
+      content.message(generation.message, nextLiveId, 'partial')
     }
     for (const slot of live?.tools ?? []) {
       if (slot.output !== undefined && slot.taskId && !slot.entry) {
         const id = `tool-progress:${this.epoch}:${slot.taskId}`
-        transientIds.add(id)
-        items.push({
-          ref: itemRef(id),
-          type: 'tool-result',
-          call: calls.get(slot.callId),
-          parts: [{ type: 'text', text: slot.output }],
-          outcome: 'unknown'
-        })
+        previews.set(id, { task: slot.taskId, after, role: 'toolResult' })
+        content.progress(id, slot.callId, slot.output)
       }
     }
-    if ([...this.transientIds].some((id) => !transientIds.has(id)))
-      this.feed.publish({ type: 'gap', reason: 'mapping-reset' })
-    this.transientIds = transientIds
+    let reset = false
+    for (const [id, preview] of this.previews) {
+      if (previews.has(id)) {
+        previews.set(id, preview)
+        continue
+      }
+      const candidates = view.entries.flatMap((entry) =>
+        entry.byTaskId === preview.task && entry.id > preview.after
+          ? (entry.model ?? []).flatMap((message, index) => (message.role === preview.role ? [{ entry, index }] : []))
+          : []
+      )
+      if (candidates.length !== 1) {
+        reset = true
+        continue
+      }
+      const { entry, index } = candidates[0]
+      const committed = entryItemId(entry, index)
+      this.aliases[committed] = id
+      for (const item of content.items)
+        if (item.ref.id.startsWith(`${committed}:call:`))
+          this.aliases[item.ref.id] = `${id}${item.ref.id.slice(committed.length)}`
+    }
+    if (reset) this.feed.publish({ type: 'gap', reason: 'mapping-reset' })
+    this.previews = previews
     this.feed.publish({
       ...this.feed.snapshot,
-      items,
+      items: content.items,
       activity: { scope: 'foreground', state: live?.run ? 'active' : 'idle' }
     })
   }

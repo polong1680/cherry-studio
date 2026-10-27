@@ -17,6 +17,10 @@ import type { CherryUIMessage } from '@shared/data/types/message'
 import { ThreadMessageProjection } from './ThreadMessageProjection'
 
 const logger = loggerService.withContext('ChildThreadProjection')
+type CommittedHistory = {
+  items: readonly ContentItem[]
+  aliases: Readonly<Record<string, string>>
+}
 
 export function savedChildView(context: AgentSessionContextRow): AgentChildView {
   return {
@@ -57,10 +61,7 @@ export class ChildThreadProjection {
   constructor(
     readonly context: AgentSessionContextRow,
     private readonly handle: ThreadHandle,
-    private readonly readCommitted: () => {
-      items: readonly ContentItem[]
-      aliases: Readonly<Record<string, string>>
-    }
+    private readonly readCommitted: () => CommittedHistory | Promise<CommittedHistory>
   ) {
     this.projection = new ThreadMessageProjection(handle.thread)
     this.nativeIds = { ...(context.checkpointMapping?.projection as Record<string, string> | undefined) }
@@ -163,7 +164,7 @@ export class ChildThreadProjection {
     const current = this.projection.snapshot()
     const history = this.needsHistory
     this.needsHistory = false
-    const archive = history ? this.readCommitted() : undefined
+    const archive = history ? await this.readCommitted() : undefined
     for (const item of archive?.items ?? [])
       if (item.type === 'message' && item.inputId && messages.hasSubmission(this.context.sessionId, item.inputId))
         this.nativeIds[item.ref.id] = item.inputId
@@ -187,8 +188,9 @@ export class ChildThreadProjection {
         })
         for (const message of recovered.snapshot().messages) {
           const id = (this.nativeIds[message.id] ??= uuid())
-          next.set(id, { ...message, id })
           committed.add(id)
+          if (message.role === 'user' && next.has(id) && messages.hasSubmission(this.context.sessionId, id)) continue
+          next.set(id, { ...message, id })
         }
       } finally {
         await recovered.close()
@@ -196,9 +198,13 @@ export class ChildThreadProjection {
     }
     for (const message of current.messages) {
       if (this.committedLiveIds.has(message.id)) continue
-      const id = this.productIds.get(message.id) ?? uuid()
+      const id = this.nativeIds[message.id] ?? this.productIds.get(message.id) ?? uuid()
       this.productIds.set(message.id, id)
-      if (committed.has(id)) continue
+      if (
+        committed.has(id) ||
+        (message.role === 'user' && next.has(id) && messages.hasSubmission(this.context.sessionId, id))
+      )
+        continue
       next.set(id, { ...message, id })
     }
     const order = [...next.keys()]
