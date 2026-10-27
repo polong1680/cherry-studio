@@ -1117,6 +1117,7 @@ const NotesPage: FC = () => {
               key={`${fileSession.sessionId}:${fileSession.documentEpoch}`}
               readOnly={fileSession.readOnly}
               activeNodeId={editorNodeId}
+              notePath={activeFilePath}
               voiceNoteId={activeNode?.type === 'file' ? voiceNoteId : undefined}
               currentContent={currentContent}
               contentLoadError={contentLoadError}
